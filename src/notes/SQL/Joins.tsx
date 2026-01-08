@@ -1,284 +1,450 @@
-import React, { useState, useMemo } from 'react';
-import { Database, ArrowRightLeft,  ArrowRight, ArrowLeft, XCircle, Info } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Play, Pause, RotateCcw, Database, ArrowDown, ChevronRight, Check, X, Layers } from 'lucide-react';
 
-const SQLJoinVisualizer = () => {
+const SQLJoinAnimator = () => {
+  // --- State ---
   const [joinType, setJoinType] = useState('INNER');
-
-  // Source Data
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentStepIndex, setCurrentStepIndex] = useState(-1);
+  const [animationSpeed, setAnimationSpeed] = useState(1000); // ms per step
+  const [completedRows, setCompletedRows] = useState([]);
+  
+  // --- Data ---
   const employees = [
-    { id: 1, name: 'Alice', role: 'Dev', dept_id: 101 },
-    { id: 2, name: 'Bob', role: 'Manager', dept_id: 102 },
-    { id: 3, name: 'Charlie', role: 'Intern', dept_id: null }, // No Department
+    { id: 1, name: 'Alice', dept_id: 101 },
+    { id: 2, name: 'Bob', dept_id: 102 },
+    { id: 3, name: 'Charlie', dept_id: null },
   ];
 
   const departments = [
     { id: 101, name: 'Product' },
     { id: 102, name: 'Sales' },
-    { id: 103, name: 'Engineering' }, // No Employees
+    { id: 103, name: 'Engineering' },
   ];
 
-  // Logic to simulate SQL Joins
-  const resultData = useMemo(() => {
-    let results = [];
-    
-    // Helper to format a row
-    const createRow = (emp, dept) => ({
-      emp_name: emp ? emp.name : 'NULL',
-      emp_role: emp ? emp.role : 'NULL',
-      dept_id_fk: emp ? (emp.dept_id || 'NULL') : 'NULL',
-      dept_id_pk: dept ? dept.id : 'NULL',
-      dept_name: dept ? dept.name : 'NULL',
-      matchStatus: emp && dept ? 'match' : (emp ? 'left-only' : 'right-only')
-    });
+  // --- Animation Logic Generation ---
+  
+  // Helper to create a merged row object
+  const createMergedRow = (emp, dept, status) => ({
+    id: `${emp ? emp.id : 'null'}-${dept ? dept.id : 'null'}`,
+    emp,
+    dept,
+    status // 'match', 'left-only', 'right-only'
+  });
 
-    if (joinType === 'INNER') {
+  // Generate the sequence of animation steps based on Join Type
+  const steps = useMemo(() => {
+    const sequence = [];
+    
+    if (joinType === 'INNER' || joinType === 'LEFT') {
       employees.forEach(emp => {
-        const dept = departments.find(d => d.id === emp.dept_id);
-        if (dept) results.push(createRow(emp, dept));
-      });
-    } 
-    else if (joinType === 'LEFT') {
-      employees.forEach(emp => {
-        const dept = departments.find(d => d.id === emp.dept_id);
-        results.push(createRow(emp, dept));
+        // Step 1: Select Left Row
+        sequence.push({
+          type: 'select',
+          leftId: emp.id,
+          rightId: null,
+          message: `Processing Employee: ${emp.name} (Dept ID: ${emp.dept_id || 'NULL'})`
+        });
+
+        const match = departments.find(d => d.id === emp.dept_id);
+
+        if (match) {
+          // Step 2: Found Match
+          sequence.push({
+            type: 'match',
+            leftId: emp.id,
+            rightId: match.id,
+            message: `Match found! Dept ${match.id} is ${match.name}.`,
+            row: createMergedRow(emp, match, 'match')
+          });
+          // Step 3: Merge
+          sequence.push({
+            type: 'merge',
+            leftId: emp.id,
+            rightId: match.id,
+            message: `Merging ${emp.name} + ${match.name} into result.`,
+            row: createMergedRow(emp, match, 'match')
+          });
+        } else {
+          // No match found
+          sequence.push({
+            type: 'scan-fail',
+            leftId: emp.id,
+            rightId: null,
+            message: `No department found for ID ${emp.dept_id || 'NULL'}.`
+          });
+
+          if (joinType === 'LEFT') {
+            sequence.push({
+              type: 'merge-null',
+              leftId: emp.id,
+              rightId: null,
+              message: `LEFT JOIN preserves ${emp.name}. Filling Right side with NULL.`,
+              row: createMergedRow(emp, null, 'left-only')
+            });
+          } else {
+            sequence.push({
+              type: 'discard',
+              leftId: emp.id,
+              rightId: null,
+              message: `INNER JOIN discards ${emp.name} because there is no match.`
+            });
+          }
+        }
       });
     } 
     else if (joinType === 'RIGHT') {
       departments.forEach(dept => {
-        const matchingEmps = employees.filter(e => e.dept_id === dept.id);
-        if (matchingEmps.length > 0) {
-          matchingEmps.forEach(emp => results.push(createRow(emp, dept)));
+        sequence.push({
+          type: 'select',
+          leftId: null,
+          rightId: dept.id,
+          message: `Processing Department: ${dept.name} (ID: ${dept.id})`
+        });
+
+        const matches = employees.filter(e => e.dept_id === dept.id);
+
+        if (matches.length > 0) {
+          matches.forEach(emp => {
+             sequence.push({
+              type: 'match',
+              leftId: emp.id,
+              rightId: dept.id,
+              message: `Match found! Employee ${emp.name} belongs to ${dept.name}.`,
+              row: createMergedRow(emp, dept, 'match')
+            });
+            sequence.push({
+              type: 'merge',
+              leftId: emp.id,
+              rightId: dept.id,
+              message: `Merging ${emp.name} + ${dept.name} into result.`,
+              row: createMergedRow(emp, dept, 'match')
+            });
+          });
         } else {
-          results.push(createRow(null, dept));
-        }
-      });
-    } 
-    else if (joinType === 'FULL') {
-      // 1. Get all matches and Left specific
-      employees.forEach(emp => {
-        const dept = departments.find(d => d.id === emp.dept_id);
-        results.push(createRow(emp, dept));
-      });
-      // 2. Add Right specific that weren't caught
-      departments.forEach(dept => {
-        const hasMatch = employees.some(e => e.dept_id === dept.id);
-        if (!hasMatch) {
-          results.push(createRow(null, dept));
+          sequence.push({
+            type: 'scan-fail',
+            leftId: null,
+            rightId: dept.id,
+            message: `No employees found in ${dept.name}.`
+          });
+          sequence.push({
+            type: 'merge-null',
+            leftId: null,
+            rightId: dept.id,
+            message: `RIGHT JOIN preserves ${dept.name}. Filling Left side with NULL.`,
+            row: createMergedRow(null, dept, 'right-only')
+          });
         }
       });
     }
-    return results;
+    else if (joinType === 'FULL') {
+        // Phase 1: Left + Matches
+        employees.forEach(emp => {
+            sequence.push({ type: 'select', leftId: emp.id, rightId: null, message: `Checking Employee: ${emp.name}` });
+            const match = departments.find(d => d.id === emp.dept_id);
+            if (match) {
+                 sequence.push({ type: 'merge', leftId: emp.id, rightId: match.id, message: `Match! Merging ${emp.name} + ${match.name}`, row: createMergedRow(emp, match, 'match') });
+            } else {
+                 sequence.push({ type: 'merge-null', leftId: emp.id, rightId: null, message: `No Match. FULL JOIN keeps ${emp.name} + NULL`, row: createMergedRow(emp, null, 'left-only') });
+            }
+        });
+        // Phase 2: Right orphans
+        departments.forEach(dept => {
+            const hasMatch = employees.some(e => e.dept_id === dept.id);
+            if (!hasMatch) {
+                 sequence.push({ type: 'select', leftId: null, rightId: dept.id, message: `Checking orphan Department: ${dept.name}` });
+                 sequence.push({ type: 'merge-null', leftId: null, rightId: dept.id, message: `No Employees. FULL JOIN keeps NULL + ${dept.name}`, row: createMergedRow(null, dept, 'right-only') });
+            }
+        });
+    }
+
+    return sequence;
   }, [joinType]);
 
-  const explanations = {
-    INNER: {
-      title: "Inner Join (Intersection)",
-      desc: "Only returns rows where there is a match in BOTH tables.",
-      note: "Notice Charlie is gone (no dept) and Engineering is gone (no employees).",
-      color: "bg-blue-100 text-blue-800"
-    },
-    LEFT: {
-      title: "Left Join",
-      desc: "Returns ALL rows from the Left table (Employees), and matched rows from the Right.",
-      note: "Charlie is here! But his department columns are NULL.",
-      color: "bg-green-100 text-green-800"
-    },
-    RIGHT: {
-      title: "Right Join",
-      desc: "Returns ALL rows from the Right table (Departments), and matched rows from the Left.",
-      note: "Engineering is here! But the employee columns are NULL.",
-      color: "bg-purple-100 text-purple-800"
-    },
-    FULL: {
-      title: "Full Outer Join",
-      desc: "Returns EVERYTHING from both tables.",
-      note: "You see matches, unmatched employees (Charlie), AND unmatched departments (Engineering).",
-      color: "bg-orange-100 text-orange-800"
+
+  // --- Timer & Execution ---
+  
+  useEffect(() => {
+    let timer;
+    if (isPlaying && currentStepIndex < steps.length - 1) {
+      timer = setTimeout(() => {
+        setCurrentStepIndex(prev => prev + 1);
+      }, animationSpeed);
+    } else if (currentStepIndex >= steps.length - 1) {
+      setIsPlaying(false);
     }
+    return () => clearTimeout(timer);
+  }, [isPlaying, currentStepIndex, steps, animationSpeed]);
+
+  // Handle side effects of steps (adding to completed rows)
+  useEffect(() => {
+    if (currentStepIndex >= 0 && currentStepIndex < steps.length) {
+      const step = steps[currentStepIndex];
+      if (step.type === 'merge' || step.type === 'merge-null') {
+        // Add to completed rows immediately for this simplified viz, 
+        // or we could wait a beat. Let's add it.
+        setCompletedRows(prev => [...prev, step.row]);
+      }
+    }
+  }, [currentStepIndex, steps]);
+
+  const resetAnimation = () => {
+    setIsPlaying(false);
+    setCurrentStepIndex(-1);
+    setCompletedRows([]);
   };
 
-  const VennDiagram = ({ type }) => {
-    // Simple SVG Venn Diagram representation
-    const leftFill = type === 'LEFT' || type === 'FULL' ? "#3b82f6" : "#e5e7eb";
-    const rightFill = type === 'RIGHT' || type === 'FULL' ? "#3b82f6" : "#e5e7eb";
-    const centerFill = "#2563eb"; 
-
-    return (
-      <svg viewBox="0 0 200 120" className="h-24 w-auto mx-auto mb-4">
-        <circle cx="70" cy="60" r="45" fill={leftFill} opacity="0.5" />
-        <circle cx="130" cy="60" r="45" fill={rightFill} opacity="0.5" />
-        {/* Intersection */}
-        <path d="M 98,28 A 45,45 0 0,1 98,92 A 45,45 0 0,1 98,28" fill={centerFill} opacity="1" />
-        <text x="50" y="65" fontSize="12" fill="black" fontWeight="bold">L</text>
-        <text x="145" y="65" fontSize="12" fill="black" fontWeight="bold">R</text>
-      </svg>
-    );
+  const handleJoinChange = (type) => {
+    setJoinType(type);
+    resetAnimation();
   };
+
+  // --- Current State Selectors ---
+  const currentStep = steps[currentStepIndex] || { type: 'idle', message: 'Ready to start.' };
+  const activeLeftId = currentStep.leftId;
+  const activeRightId = currentStep.rightId;
+
+  // Render Helpers
+  const renderNullCell = () => <span className="text-gray-400 italic text-xs tracking-wider">NULL</span>;
 
   return (
-    <div className="max-w-4xl mx-auto p-4 bg-gray-50 min-h-screen font-sans">
-      <header className="mb-8 text-center">
-        <h1 className="text-3xl font-bold text-gray-800 flex items-center justify-center gap-3">
-          <Database className="w-8 h-8 text-blue-600" />
-          SQL Join Visualizer
+    <div className="flex flex-col min-h-screen bg-slate-50 font-sans text-slate-800 p-4 max-w-5xl mx-auto">
+      
+      {/* Header */}
+      <header className="mb-6 border-b pb-4">
+        <h1 className="text-2xl font-bold flex items-center gap-2 text-slate-900">
+          <Layers className="w-6 h-6 text-blue-600" />
+          Animated SQL Join Visualizer
         </h1>
-        <p className="text-gray-600 mt-2">Interactive playground to understand how tables connect</p>
+        <p className="text-slate-500 text-sm mt-1">
+          Watch how the database engine stitches tables together, row by row.
+        </p>
       </header>
 
-      {/* Source Tables Area */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-        
-        {/* Table A: Employees */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="font-bold text-gray-700">Left Table: Employees</h3>
-            <span className="text-xs bg-gray-100 px-2 py-1 rounded">id, name, dept_id</span>
-          </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-100 text-left">
-                <th className="p-2 rounded-tl">ID</th>
-                <th className="p-2">Name</th>
-                <th className="p-2 rounded-tr">Dept_ID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {employees.map(e => (
-                <tr key={e.id} className="border-t border-gray-100">
-                  <td className="p-2 text-gray-500">{e.id}</td>
-                  <td className="p-2 font-medium">{e.name}</td>
-                  <td className={`p-2 font-mono ${e.dept_id === null ? 'text-red-500 italic' : 'text-blue-600'}`}>
-                    {e.dept_id === null ? 'NULL' : e.dept_id}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Table B: Departments */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="font-bold text-gray-700">Right Table: Departments</h3>
-            <span className="text-xs bg-gray-100 px-2 py-1 rounded">id, name</span>
-          </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-100 text-left">
-                <th className="p-2 rounded-tl">ID</th>
-                <th className="p-2 rounded-tr">Name</th>
-              </tr>
-            </thead>
-            <tbody>
-              {departments.map(d => (
-                <tr key={d.id} className="border-t border-gray-100">
-                  <td className="p-2 text-blue-600 font-mono">{d.id}</td>
-                  <td className="p-2 font-medium">{d.name}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Controls & Visualization */}
-      <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden mb-8">
-        <div className="bg-gray-800 text-white p-4 flex flex-wrap gap-2 justify-center">
-          {['INNER', 'LEFT', 'RIGHT', 'FULL'].map((type) => (
+      {/* Controls */}
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-4 items-center justify-between">
+        <div className="flex gap-2">
+          {['INNER', 'LEFT', 'RIGHT', 'FULL'].map(t => (
             <button
-              key={type}
-              onClick={() => setJoinType(type)}
-              className={`px-6 py-2 rounded-full font-bold transition-all ${
-                joinType === type 
-                  ? 'bg-blue-500 text-white scale-105 shadow-lg ring-2 ring-blue-300' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              key={t}
+              onClick={() => handleJoinChange(t)}
+              className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors ${
+                joinType === t 
+                ? 'bg-blue-600 text-white shadow-md' 
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              {type} JOIN
+              {t} JOIN
             </button>
           ))}
         </div>
 
-        <div className="p-6">
-          <div className="flex flex-col md:flex-row items-center gap-8">
-            {/* Visual Diagram */}
-            <div className="w-full md:w-1/3 flex flex-col items-center justify-center border-r border-gray-100 pr-4">
-               <VennDiagram type={joinType} />
-               <div className="text-center">
-                  <h3 className="font-bold text-lg mb-1">{explanations[joinType].title}</h3>
-                  <p className="text-sm text-gray-500">{explanations[joinType].desc}</p>
-               </div>
-            </div>
-
-            {/* Code & Logic */}
-            <div className="w-full md:w-2/3">
-              <div className="bg-gray-100 rounded-lg p-4 mb-4 font-mono text-sm shadow-inner overflow-x-auto">
-                <span className="text-purple-400">SELECT</span> * <br/>
-                <span className="text-purple-400">FROM</span> Employees <span className="text-red-400">E</span><br/>
-                <span className="text-blue-400 font-bold">{joinType} JOIN</span> Departments <span className="text-red-400">D</span><br/>
-                <span className="text-purple-400">ON</span> <span className="text-red-400">E</span>.dept_id = <span className="text-red-400">D</span>.id;
-              </div>
-
-              <div className={`p-4 rounded-lg flex items-start gap-3 ${explanations[joinType].color}`}>
-                <Info className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                <p className="text-sm font-medium">{explanations[joinType].note}</p>
-              </div>
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="flex bg-slate-100 rounded-lg p-1">
+            <button 
+              onClick={() => setAnimationSpeed(1500)}
+              className={`px-3 py-1 text-xs rounded-md ${animationSpeed === 1500 ? 'bg-white shadow text-blue-600 font-bold' : 'text-slate-500'}`}
+            >
+              Slow
+            </button>
+            <button 
+              onClick={() => setAnimationSpeed(800)}
+              className={`px-3 py-1 text-xs rounded-md ${animationSpeed === 800 ? 'bg-white shadow text-blue-600 font-bold' : 'text-slate-500'}`}
+            >
+              Fast
+            </button>
           </div>
+
+          {!isPlaying ? (
+            <button 
+              onClick={() => {
+                if (currentStepIndex === steps.length - 1) resetAnimation();
+                setIsPlaying(true);
+              }}
+              className="flex items-center gap-2 px-5 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-bold shadow-sm transition-transform active:scale-95"
+            >
+              <Play className="w-4 h-4 fill-current" />
+              {currentStepIndex === -1 ? 'Start' : currentStepIndex === steps.length - 1 ? 'Replay' : 'Resume'}
+            </button>
+          ) : (
+            <button 
+              onClick={() => setIsPlaying(false)}
+              className="flex items-center gap-2 px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-bold shadow-sm"
+            >
+              <Pause className="w-4 h-4 fill-current" />
+              Pause
+            </button>
+          )}
+
+          <button 
+            onClick={resetAnimation}
+            className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100"
+            title="Reset"
+          >
+            <RotateCcw className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
-      {/* Result Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-         <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
-           <ArrowRightLeft className="w-5 h-5 text-blue-500" />
-           Result Set
-         </h3>
-         <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="bg-gray-100 text-gray-600 border-b-2 border-gray-200">
-                <th className="p-3 text-left border-r border-gray-300">Emp Name</th>
-                <th className="p-3 text-left border-r border-gray-300">Role</th>
-                <th className="p-3 text-left border-r-4 border-gray-400 bg-gray-200">E.dept_id</th>
-                <th className="p-3 text-left bg-gray-200 border-r border-gray-300">D.id</th>
-                <th className="p-3 text-left">Dept Name</th>
-              </tr>
-            </thead>
-            <tbody>
-              {resultData.map((row, idx) => (
-                <tr key={idx} className={`border-b border-gray-100 hover:bg-gray-50 ${
-                  row.matchStatus === 'match' ? 'bg-green-50' : 
-                  row.matchStatus === 'left-only' ? 'bg-blue-50' : 'bg-purple-50'
-                }`}>
-                  <td className={`p-3 border-r border-gray-200 ${row.emp_name === 'NULL' ? 'text-gray-400 italic' : 'font-medium'}`}>
-                    {row.emp_name}
-                  </td>
-                  <td className={`p-3 border-r border-gray-200 ${row.emp_role === 'NULL' ? 'text-gray-400 italic' : ''}`}>
-                    {row.emp_role}
-                  </td>
-                  <td className={`p-3 border-r-4 border-gray-300 font-mono ${row.dept_id_fk === 'NULL' ? 'text-red-400 italic' : 'text-blue-600'}`}>
-                    {row.dept_id_fk}
-                  </td>
-                  <td className={`p-3 border-r border-gray-200 font-mono ${row.dept_id_pk === 'NULL' ? 'text-red-400 italic' : 'text-blue-600'}`}>
-                    {row.dept_id_pk}
-                  </td>
-                  <td className={`p-3 ${row.dept_name === 'NULL' ? 'text-gray-400 italic' : 'font-medium'}`}>
-                    {row.dept_name}
-                  </td>
-                </tr>
-              ))}
-              {resultData.length === 0 && (
+      {/* Main Animation Stage */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8 relative">
+        
+        {/* Table 1: Employees */}
+        <div className="relative">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="font-bold text-blue-700 text-sm uppercase tracking-wide">Left: Employees</h3>
+          </div>
+          <div className="bg-white rounded-lg shadow-sm border border-blue-100 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-blue-50 text-blue-800">
                 <tr>
-                  <td colSpan="5" className="p-8 text-center text-gray-400">No rows returned</td>
+                  <th className="p-3 text-left">ID</th>
+                  <th className="p-3 text-left">Name</th>
+                  <th className="p-3 text-left">Dept_ID</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {employees.map(emp => (
+                  <tr 
+                    key={emp.id}
+                    className={`transition-all duration-300 border-b border-blue-50 ${
+                      activeLeftId === emp.id 
+                        ? 'bg-blue-100 ring-2 ring-blue-500 ring-inset scale-[1.02] z-10 font-medium' 
+                        : 'opacity-100'
+                    }`}
+                  >
+                    <td className="p-3">{emp.id}</td>
+                    <td className="p-3">{emp.name}</td>
+                    <td className={`p-3 font-mono ${!emp.dept_id ? 'text-red-400' : ''}`}>
+                      {emp.dept_id || 'NULL'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Table 2: Departments */}
+        <div className="relative">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="font-bold text-purple-700 text-sm uppercase tracking-wide">Right: Departments</h3>
+          </div>
+          <div className="bg-white rounded-lg shadow-sm border border-purple-100 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-purple-50 text-purple-800">
+                <tr>
+                  <th className="p-3 text-left">ID</th>
+                  <th className="p-3 text-left">Name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {departments.map(dept => (
+                  <tr 
+                    key={dept.id}
+                    className={`transition-all duration-300 border-b border-purple-50 ${
+                      activeRightId === dept.id 
+                        ? 'bg-purple-100 ring-2 ring-purple-500 ring-inset scale-[1.02] z-10 font-medium' 
+                        : 'opacity-100'
+                    }`}
+                  >
+                    <td className="p-3 font-mono">{dept.id}</td>
+                    <td className="p-3">{dept.name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Processing Indicator (Center Overlay) */}
+        {isPlaying && (
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none w-full max-w-md">
+                 {/* Connection Line */}
+                 <div className={`
+                    bg-slate-800 text-white text-xs font-mono p-3 rounded-full shadow-2xl
+                    flex items-center justify-center gap-3 transition-all duration-300 opacity-90
+                    ${currentStep.type === 'match' ? 'scale-110 bg-green-600' : ''}
+                    ${currentStep.type === 'scan-fail' ? 'bg-red-500' : ''}
+                    ${currentStep.type === 'discard' ? 'bg-gray-400 opacity-50' : ''}
+                 `}>
+                    {currentStep.type === 'match' && <Check className="w-4 h-4" />}
+                    {currentStep.type === 'scan-fail' && <X className="w-4 h-4" />}
+                    {currentStep.type === 'select' && <Database className="w-4 h-4 animate-pulse" />}
+                    
+                    <span>{currentStep.message}</span>
+                 </div>
+            </div>
+        )}
+      </div>
+
+
+      {/* The "Merging Zone" / Result Table */}
+      <div className="flex-1 bg-white rounded-xl shadow-lg border border-slate-200 p-6 flex flex-col">
+         <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+            <ArrowDown className="w-5 h-5 text-green-500" />
+            Result Set
+            <span className="text-xs font-normal text-slate-400 ml-2 bg-slate-100 px-2 py-1 rounded-full">
+                {completedRows.length} rows generated
+            </span>
+         </h3>
+         
+         <div className="flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-50 min-h-[200px] relative">
+            <table className="w-full text-sm border-collapse">
+                <thead className="sticky top-0 bg-slate-200 text-slate-700 shadow-sm z-10">
+                    <tr>
+                        <th className="p-3 text-left w-1/6 border-r border-slate-300">Emp ID</th>
+                        <th className="p-3 text-left w-1/4 border-r border-slate-300">Emp Name</th>
+                        <th className="p-3 text-left w-1/6 border-r-4 border-slate-400 bg-blue-100/50">Dept ID (FK)</th>
+                        <th className="p-3 text-left w-1/6 border-r border-slate-300 bg-purple-100/50">Dept ID (PK)</th>
+                        <th className="p-3 text-left">Dept Name</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {completedRows.map((row, idx) => (
+                        <tr 
+                            key={idx} 
+                            className={`
+                                border-b border-slate-200 transition-all duration-500 ease-out
+                                ${row.status === 'match' ? 'bg-green-50' : row.status === 'left-only' ? 'bg-blue-50' : 'bg-purple-50'}
+                                animate-in fade-in slide-in-from-top-4
+                            `}
+                        >
+                            <td className="p-3 font-mono border-r border-slate-200">
+                                {row.emp ? row.emp.id : renderNullCell()}
+                            </td>
+                            <td className="p-3 border-r border-slate-200 font-medium">
+                                {row.emp ? row.emp.name : renderNullCell()}
+                            </td>
+                            <td className="p-3 border-r-4 border-slate-300 font-mono text-blue-600">
+                                {row.emp ? (row.emp.dept_id || renderNullCell()) : renderNullCell()}
+                            </td>
+                            <td className="p-3 border-r border-slate-200 font-mono text-purple-600">
+                                {row.dept ? row.dept.id : renderNullCell()}
+                            </td>
+                            <td className="p-3">
+                                {row.dept ? row.dept.name : renderNullCell()}
+                            </td>
+                        </tr>
+                    ))}
+                    {completedRows.length === 0 && (
+                        <tr>
+                            <td colSpan="5" className="p-12 text-center text-slate-400">
+                                <div className="flex flex-col items-center gap-2">
+                                    <Database className="w-8 h-8 opacity-20" />
+                                    <span>Waiting for database execution...</span>
+                                </div>
+                            </td>
+                        </tr>
+                    )}
+                </tbody>
+            </table>
          </div>
       </div>
+
     </div>
   );
 };
 
-export default SQLJoinVisualizer;
+export default SQLJoinAnimator;
